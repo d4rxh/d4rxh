@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+import telebot
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+import zipfile  # Zip functionality ke liye
+
+# 🔑 Bot Token (replace with your actual token or load from environment variable)
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
+bot = telebot.TeleBot(TOKEN)
+
+# 🎯 Access Control: Sirf in user IDs ko bot ka access dena
+ALLOWED_USERS = [
+    6821369873,  # owner
+    987654321,
+    # Add more user IDs as needed
+]
+
+# 📂 File Paths (Update these paths according to your environment)
+INDEX_FILE = "/storage/emulated/0/DARK_PAK/Index.txt"
+FOLDER_PATH = "/storage/emulated/0/DARK_PAK/UNPACK_REPACK/UNPACK/game_patch_3.7.0.19766/unpack/"
+OUTPUT_PATH = "/storage/emulated/0/DARK_PAK/UNPACK_REPACK/UNPACK/game_patch_3.7.0.19766/repack/"
+
+# ------------------------ REPACK CONFIGURATION ------------------------
+DARK_MODS_DIR = "/storage/emulated/0/DARK_PAK/UNPACK_REPACK"
+PAKS_DIR = os.path.join(DARK_MODS_DIR, "PAKS")
+UNPACK_REPACK_DIR = os.path.join(DARK_MODS_DIR, "UNPACK")
+EXECUTABLE_SCRIPT = os.path.join(os.path.expanduser("~"), "DARK_PAK", "DARKSIDE")
+# ----------------------------------------------------------------------
+
+# 📌 Load Index Data
+def load_index():
+    with open(INDEX_FILE, 'r') as f:
+        return f.readlines()
+
+index_data = load_index()
+
+# 🔎 Search Hex Code in Index
+def search_index(hex_code):
+    for line in index_data:
+        parts = line.split(" | ")
+        if len(parts) >= 3 and parts[1].strip().lower() == hex_code.lower():
+            return parts[2].split(":")[1].strip()
+    return None
+
+# ✏ Hex Editing Function
+def hex_edit(skins):
+    if not os.path.exists(OUTPUT_PATH):
+        os.makedirs(OUTPUT_PATH)
+
+    for hex_code1, hex_code2 in skins:
+        index1 = search_index(hex_code1)
+        index2 = search_index(hex_code2)
+
+        if index1 and index2:
+            search_bytes = bytes.fromhex(hex_code1)
+            replace_byte1 = bytes.fromhex(index1)
+            replace_byte2 = bytes.fromhex(index2)
+
+            for root, _, files in os.walk(FOLDER_PATH):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    repack_file_path = os.path.join(OUTPUT_PATH, os.path.relpath(file_path, FOLDER_PATH))
+
+                    try:
+                        with open(file_path, 'rb') as f:
+                            data = f.read()
+
+                        if search_bytes in data:
+                            modified_data = data.replace(replace_byte1, replace_byte2)
+                            os.makedirs(os.path.dirname(repack_file_path), exist_ok=True)
+                            with open(repack_file_path, 'wb') as f:
+                                f.write(modified_data)
+
+                    except Exception as e:
+                        return f"⚠ Error: {e}"
+        else:
+            return "⚠ One or both hex codes were not found in the index."
+
+    return "✅ Hex Editing Completed!"
+
+# ------------------ AUTO REPACK FUNCTIONS ------------------
+
+def repakgamepach1(selected_file):
+    pak_name = os.path.splitext(os.path.basename(selected_file))[0]
+    repack_dir = os.path.join(UNPACK_REPACK_DIR, pak_name, "repack")
+    result_dir = os.path.join(UNPACK_REPACK_DIR, pak_name, "result")
+
+    if not os.path.exists(repack_dir):
+        print(f"No edited files found in the repack directory for {os.path.basename(selected_file)}.")
+        return False
+
+    print(f"Repacking {os.path.basename(selected_file)} while keeping the original safe...")
+
+    os.makedirs(result_dir, exist_ok=True)
+
+    original_pak_file = os.path.join(PAKS_DIR, os.path.basename(selected_file))
+    copied_pak_file = os.path.join(repack_dir, os.path.basename(selected_file))
+    result_pak_file = os.path.join(result_dir, os.path.basename(selected_file))
+
+    try:
+        shutil.copy2(original_pak_file, copied_pak_file)
+        print("Copied original file to repack folder.")
+
+        print("Repacking in progress...")
+        subprocess.run([EXECUTABLE_SCRIPT, "-a", "-r", copied_pak_file, repack_dir])
+        time.sleep(1)
+
+        if os.path.exists(copied_pak_file):
+            shutil.move(copied_pak_file, result_pak_file)
+            print(f"Repacking completed! Modified .pak saved at {result_pak_file}.")
+        else:
+            print("Repacking failed! No file was created in the result folder.")
+            return False
+
+        if os.path.exists(copied_pak_file):
+            os.remove(copied_pak_file)
+            print("Temporary file deleted from repack folder.")
+        time.sleep(2)
+        return result_pak_file
+    except Exception as e:
+        print(f"Error during repack: {e}")
+        return False
+
+def auto_repack():
+    target_pak = os.path.join(PAKS_DIR, "game_patch_3.7.0.19766.pak")
+    if not os.path.exists(target_pak):
+        print(f"{target_pak} not found. Repack aborted.")
+        return None
+    print(f"Initiating automatic repack for {os.path.basename(target_pak)} ...")
+    return repakgamepach1(target_pak)
+
+def send_repacked_file(chat_id, file_path):
+    if file_path and os.path.exists(file_path):
+        zip_file_path = file_path + ".zip"
+        with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(file_path, os.path.basename(file_path))
+        with open(zip_file_path, "rb") as doc:
+            bot.send_document(chat_id, doc)
+        os.remove(zip_file_path)
+    else:
+        bot.send_message(chat_id, "Repacked file not found.")
+
+# ------------------ TELEGRAM BOT HANDLERS ------------------
+
+def is_user_allowed(message):
+    return message.from_user.id in ALLOWED_USERS
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    if not is_user_allowed(message):
+        bot.reply_to(message, "Access lene ke liye @D4RXH_FAITH se contact kro")
+        return
+    welcome_text = (
+        "👋 Welcome!\n\n"
+        "Send Hex Codes in this format:\n"
+        "```\nHEX1,HEX2\n```\n\n"
+        "Or multiple pairs:\n"
+        "```\nHEX1,HEX2\nHEX3,HEX4\n```"
+    )
+    bot.reply_to(message, welcome_text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: True)
+def process_hex_codes(message):
+    if not is_user_allowed(message):
+        bot.reply_to(message, "Access lene ke liye @D4RXH_FAITH se contact kro")
+        return
+
+    hex_pairs = [tuple(line.strip().split(',')) for line in message.text.split('\n') if ',' in line]
+    if not hex_pairs:
+        bot.reply_to(message, "⚠ Invalid Format! Use: `HEX1,HEX2`", parse_mode="Markdown")
+        return
+
+    bot.reply_to(message, "⏳ Processing...")
+    result = hex_edit(hex_pairs)
+    bot.reply_to(message, result)
+
+    repacked_file = auto_repack()
+    if repacked_file:
+        send_repacked_file(message.chat.id, repacked_file)
+    else:
+        bot.send_message(message.chat.id, "⚠ Auto repack failed or no repacked file found.")
+
+if __name__ == "__main__":
+    print("Bot is polling...")
+    bot.polling()
